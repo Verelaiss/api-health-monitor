@@ -1,0 +1,602 @@
+{
+  "name": "API Health Monitor - Portfolio",
+  "nodes": [
+    {
+      "parameters": {
+        "url": "https://httpbin.org/status/200",
+        "options": {
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 3000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        -1056,
+        -80
+      ],
+      "id": "c3fd57b7-9b20-4e9b-b326-b78cbefca8b9",
+      "name": "HTTP Request",
+      "retryOnFail": false,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "91b37594-e4a7-4a9f-8899-c257090d81ec",
+              "name": "inicio_ms",
+              "value": "={{ Date.now() }}",
+              "type": "number"
+            }
+          ]
+        },
+        "includeOtherFields": "={{ false }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.5,
+      "position": [
+        -1280,
+        -80
+      ],
+      "id": "fbd138ff-bffd-40e6-b484-5dbb25256673",
+      "name": "Registrar Inicio"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        -1504,
+        -80
+      ],
+      "id": "27fb532f-7148-4d07-9cb7-be8f73c67c1e",
+      "name": "Inicio"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "6a7c35e6-f57f-450e-ac8d-3f73cea80da1",
+              "name": "endpoint",
+              "value": "={{ $('HTTP Request').params.url }}",
+              "type": "string"
+            },
+            {
+              "id": "fb88064c-437f-4557-ba28-5c25be3f1927",
+              "name": "mensagem_erro",
+              "value": "={{ $json.statusCode >= 200 && $json.statusCode < 300 ? null : ($json.statusMessage ?? 'Erro HTTP') }}",
+              "type": "string"
+            },
+            {
+              "id": "9e0b58a6-7850-4299-92f3-92bbabeed2fb",
+              "name": "status_http",
+              "value": "={{ $json.statusCode }}",
+              "type": "number"
+            },
+            {
+              "id": "510112c5-29b6-4065-a838-05d902932bfe",
+              "name": "sucesso",
+              "value": "={{ $json.statusCode >= 200 && $json.statusCode < 300 }}",
+              "type": "boolean"
+            },
+            {
+              "id": "a3198e8d-dec6-4c88-a193-a05a5d809cba",
+              "name": "tempo_resposta_ms",
+              "value": "={{ Date.now() - $('Registrar Inicio').item.json.inicio_ms }}",
+              "type": "number"
+            },
+            {
+              "id": "7a3f7674-fd5f-4d0a-947b-acc8c52ff2a8",
+              "name": "classificacao",
+              "value": "={{ $json.statusCode >= 200 && $json.statusCode < 300\n  ? 'SUCESSO_2XX'\n  : $json.statusCode >= 400 && $json.statusCode < 500\n  ? 'ERRO_CLIENTE_4XX'\n  : $json.statusCode >= 500 && $json.statusCode < 600\n  ? 'ERRO_SERVIDOR_5XX'\n  : 'OUTRO_STATUS'\n}}",
+              "type": "string"
+            },
+            {
+              "id": "bd1cbacb-68e5-43af-94d0-95108e48ebb6",
+              "name": "codigo_erro",
+              "value": "={{ null }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.5,
+      "position": [
+        -608,
+        32
+      ],
+      "id": "79ea890e-457c-417c-ab12-b1ee8f901f17",
+      "name": "Tempo resposta"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH ultimas AS (\n    SELECT\n        id,\n        endpoint,\n        sucesso,\n        ROW_NUMBER() OVER (\n            PARTITION BY endpoint\n            ORDER BY id DESC\n        ) AS posicao\n    FROM public.historico_monitoramento\n   WHERE endpoint = $1\n),\nanalise AS (\n    SELECT\n        endpoint,\n        MAX(id) FILTER (\n            WHERE posicao = 1\n        ) AS historico_id,\n        COUNT(*) FILTER (\n            WHERE sucesso = FALSE\n              AND posicao < COALESCE(\n                  (\n                      SELECT MIN(u2.posicao)\n                      FROM ultimas u2\n                      WHERE u2.endpoint = u1.endpoint\n                        AND u2.sucesso = TRUE\n                  ),\n                  2147483647\n              )\n        ) AS falhas_consecutivas\n    FROM ultimas u1\n    GROUP BY endpoint\n)\nSELECT\n    endpoint,\n    historico_id,\n    falhas_consecutivas,\n    (falhas_consecutivas = 3) AS alerta\nFROM analise\nORDER BY endpoint;",
+        "options": {
+          "queryReplacement": "={{ [ $json.endpoint ] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        -160,
+        -80
+      ],
+      "id": "a2b351e8-3aea-403a-bcd0-1fd831c6c2bf",
+      "name": "Verificar falhas"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO historico_monitoramento (\n    endpoint,\n    status_http,\n    tempo_resposta_ms,\n    sucesso,\n    mensagem_erro,\n    codigo_erro,\n    classificacao\n)\nVALUES (\n    $1,\n    $2,\n    $3,\n    $4,\n    $5,\n    $6,\n    $7\n)\nRETURNING *;",
+        "options": {
+          "queryReplacement": "={{ [\n  $json.endpoint,\n  $json.status_http ?? null,\n  $json.tempo_resposta_ms ?? null,\n  $json.sucesso,\n  $json.mensagem_erro ?? null,\n  $json.codigo_erro ?? null,\n  $json.classificacao ?? null\n] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        -384,
+        128
+      ],
+      "id": "76a01f0a-6aa1-4060-93f5-0bc89a62452f",
+      "name": "Armazenamento dados"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 4
+          },
+          "conditions": [
+            {
+              "id": "32840fa5-35b6-4276-9c18-0035c2044f5d",
+              "leftValue": "={{ $json.alerta }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.4,
+      "position": [
+        64,
+        -80
+      ],
+      "id": "6270153f-be40-44e5-9fff-428010d737da",
+      "name": "Dispara Alerta"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO alertas_monitoramento (\n    endpoint,\n    tipo_alerta,\n    quantidade_falhas,\n    mensagem,\n    historico_id\n)\nVALUES (\n    $1,\n    'FALHAS_CONSECUTIVAS',\n    3,\n    'API apresentou 3 falhas consecutivas',\n    $2\n)\nON CONFLICT (historico_id) DO NOTHING\nRETURNING *;",
+        "options": {
+          "queryReplacement": "={{ [\n  $json.endpoint,\n  $json.historico_id\n] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        288,
+        -80
+      ],
+      "id": "f6f22d2a-2048-48cc-bccd-33a240bfad49",
+      "name": "Registrar Alerta"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 4
+                },
+                "conditions": [
+                  {
+                    "id": "e9df6ee1-74b0-4580-8afe-1491de69ea57",
+                    "leftValue": "={{ $json.statusCode >= 200 && $json.statusCode < 300 }}",
+                    "rightValue": 0,
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "SUCESSO_2XX"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 4
+                },
+                "conditions": [
+                  {
+                    "id": "9920d64a-e656-4ac7-81c7-73f5216dc215",
+                    "leftValue": "={{ $json.statusCode >= 400 && $json.statusCode < 500 }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "ERRO_CLIENTE_4XX"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 4
+                },
+                "conditions": [
+                  {
+                    "id": "20da7c4f-b73f-496a-8799-450a23d80d51",
+                    "leftValue": "={{ $json.statusCode >= 500 && $json.statusCode < 600 }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "ERRO_SERVIDOR_5XX"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.5,
+      "position": [
+        -880,
+        48
+      ],
+      "id": "99c50994-a04b-4e81-8684-74ece857e21b",
+      "name": "Switch"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "b00a4f85-93c2-4379-aa23-dde92ee70c43",
+              "name": "classificação",
+              "value": "TIMEOUT",
+              "type": "string"
+            },
+            {
+              "id": "3302ceeb-94f2-4027-9dd4-c91bba2b0059",
+              "name": "sucesso",
+              "value": false,
+              "type": "boolean"
+            },
+            {
+              "id": "3cab90aa-2097-41cb-ab7d-620fe48cc907",
+              "name": "statusCode",
+              "value": "={{ null }}",
+              "type": "string"
+            },
+            {
+              "id": "bac1ba17-bb6f-44c3-9925-c8a4cf5911c5",
+              "name": "codigoErro",
+              "value": "={{ $json.error.code }}",
+              "type": "string"
+            },
+            {
+              "id": "9a743758-42b6-478d-863e-49544f5f0aa0",
+              "name": "mensagem",
+              "value": "={{ $json.error.message }}",
+              "type": "string"
+            },
+            {
+              "id": "170003bf-670b-4597-8604-8d5f2b2cfb7a",
+              "name": "endpoint",
+              "value": "={{ $('HTTP Request').params.url }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.5,
+      "position": [
+        -832,
+        -272
+      ],
+      "id": "8acca27c-d028-40f2-90f8-ce99d4bd5e0f",
+      "name": "Timeout"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "519c8737-bdc2-497b-8314-4b8f98ccbf47",
+              "name": "endpoint",
+              "value": "={{ $json.endpoint }}",
+              "type": "string"
+            },
+            {
+              "id": "0894a7ec-d1b0-443a-98d3-255ff094b36e",
+              "name": "status_http",
+              "value": "={{ null }}",
+              "type": "number"
+            },
+            {
+              "id": "cda14c25-47b7-4880-816a-5698d2b17a8d",
+              "name": "tempo_resposta_ms",
+              "value": "={{ null }}",
+              "type": "number"
+            },
+            {
+              "id": "46e7ef2a-76cb-4bc5-acb5-0ac74ef812e1",
+              "name": "sucesso",
+              "value": false,
+              "type": "boolean"
+            },
+            {
+              "id": "77ce840b-0458-44f6-ad13-0ef1a8163dce",
+              "name": "mensagem_erro",
+              "value": "={{ $json.mensagem }}",
+              "type": "string"
+            },
+            {
+              "id": "0fcf24b1-4d96-4436-b6af-c1f62b44e801",
+              "name": "codigo_erro",
+              "value": "={{ $json.codigoErro }}",
+              "type": "string"
+            },
+            {
+              "id": "bc2381c5-a9ac-4f57-990f-d0523afc92c3",
+              "name": "classificacao",
+              "value": "={{ $json[\"classificação\"] }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.5,
+      "position": [
+        -608,
+        -272
+      ],
+      "id": "496a6af6-5e08-4978-8a72-b4df3f31a376",
+      "name": "Preparar Timeout BD"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO public.historico_monitoramento (\n    endpoint,\n    status_http,\n    tempo_resposta_ms,\n    sucesso,\n    mensagem_erro,\n    codigo_erro,\n    classificacao\n)\nVALUES (\n    $1,\n    $2,\n    $3,\n    $4,\n    $5,\n    $6,\n    $7\n)\nRETURNING *;",
+        "options": {
+          "queryReplacement": "={{ [\n  $json.endpoint,\n  $json.status_http,\n  $json.tempo_resposta_ms,\n  $json.sucesso,\n  $json.mensagem_erro,\n  $json.codigo_erro,\n  $json.classificacao\n] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.8,
+      "position": [
+        -384,
+        -272
+      ],
+      "id": "4a4ec235-57be-402e-abd6-5aeebb86324e",
+      "name": "Armazenamento timeout"
+    }
+  ],
+  "connections": {
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Timeout",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Registrar Inicio": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Inicio": {
+      "main": [
+        [
+          {
+            "node": "Registrar Inicio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tempo resposta": {
+      "main": [
+        [
+          {
+            "node": "Armazenamento dados",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Armazenamento dados": {
+      "main": [
+        [
+          {
+            "node": "Verificar falhas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verificar falhas": {
+      "main": [
+        [
+          {
+            "node": "Dispara Alerta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dispara Alerta": {
+      "main": [
+        [
+          {
+            "node": "Registrar Alerta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch": {
+      "main": [
+        [
+          {
+            "node": "Tempo resposta",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Tempo resposta",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Tempo resposta",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Tempo resposta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Timeout": {
+      "main": [
+        [
+          {
+            "node": "Preparar Timeout BD",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar Timeout BD": {
+      "main": [
+        [
+          {
+            "node": "Armazenamento timeout",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Armazenamento timeout": {
+      "main": [
+        [
+          {
+            "node": "Verificar falhas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  }
+}
